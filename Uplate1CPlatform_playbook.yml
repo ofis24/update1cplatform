@@ -1,0 +1,99 @@
+---
+# Playbook для обновления релиза платформы на серверах приложений
+
+- name: Install 1C Enterprise Application Server
+  hosts: appservers
+  
+  # Переменные доступные плэйбуку
+  vars:
+    v8version: 8.3.15.1565
+    server_agent_srv_name: '1C:Enterprise 8.3 Server Agent'
+    server_agent_params: '-srvc -agent -regport 1541 -port 1540 -range 1560:1591 -d "C:\Program Files\1cv8\srvinfo" -debug'
+    ras_srv_name: '1C:Remote Administation Service (RAS)'
+    platform_distr_path: \\1C\Платформа\8_3_15_1565\setup.exe
+    bin_path: C:\Program Files\1cv8\{{ v8version }}\bin
+    srv_1c_pwd: !vault |
+          $ANSIBLE_VAULT;1.1;AES256
+          64396632346366373434356466396230364121656130363134316537306339643265656637366565
+          3763393238623632663732623034313738386561356232320a333766336638646137316463363031
+          66666435333939663832353937623638643764336662343834663338623666653965366233343536
+          3232633839646337300a333935333663613864306230343538653837353936373564623636366664
+          3537
+  tasks:
+    - name: Test connection
+      win_ping:
+
+    # Проверка наличия службы сервера 1С
+    - name: Check if a server agent service is installed
+      win_service:
+        name: '{{ server_agent_srv_name }}'
+      register: server_agent_srv_info
+
+    # Проверка наличия службы удаленного администрирования RAS
+    - name: Check if a RAS service is installed
+      win_service:
+        name: '{{ ras_srv_name }}'
+      register: ras_srv_info
+
+    # Остановка службы сервера 1С
+    - name: Stop server agent service
+      win_service:
+        name: '{{ server_agent_srv_name }}'
+        state: stopped
+      when: server_agent_srv_info.exists
+
+    # Остановка службы службы удаленного администрирования RAS
+    - name: Stop RAS service
+      win_service:
+        name: '{{ ras_srv_name }}'
+        state: stopped
+      when: ras_srv_info.exists
+
+    # Удаление службы сервера 1С
+    - name: Remove server agent service
+      win_service:
+        name: '{{ server_agent_srv_name }}'
+        state: absent
+      when: server_agent_srv_info.exists
+
+    # Сохранение параметров службы сервера 1С (?<=ragent.exe\s).*(?=")
+    - name: Save server agent params
+      set_fact:
+        server_agent_params: "{{ server_agent_srv_info.path | regex_search('(?<=ragent.exe\\s).*(?=\")') }}"
+      when: server_agent_srv_info.exists
+
+    # Удаление службы удаленного администрирования RAS
+    - name: Remove RAS service
+      win_service:
+        name: '{{ ras_srv_name }}'
+        state: absent
+      when: ras_srv_info.exists
+
+    # Удаление платформы
+    - name: Uninstall 1C Enterpise 8.3
+      win_package:
+        product_id: '{24877BC3-0D30-4F0E-A840-EDB9DBB30D47}' # HKLM:Software\Microsoft\Windows\CurrentVersion\Uninstall
+        state: absent
+
+    # Установка сервера 1С
+    - name: Install 1C Enterprise Application Server
+      win_package:
+        path: '{{ platform_distr_path }}'
+        product_id: '{24877BC3-0D30-4F0E-A840-EDB9DBB30D47}'
+        arguments: 'DESIGNERALLCLIENTS=1 THINCLIENTFILE=0 THINCLIENT=1 WEBSERVEREXT=1 SERVER=1 CONFREPOSSERVER=0 CONVERTER77=0 SERVERCLIENT=1 LANGUAGES=RU'
+
+    # Создание службы агента сервера 1С
+    - name: Create a new server agent service
+      win_service:
+        name: '{{ server_agent_srv_name }}'
+        path: '{{ bin_path }}\ragent.exe {{ server_agent_params }}'
+        start_mode: auto
+        username: srv_1c
+        password: '{{ srv_1c_pwd }}'
+
+    # Создание службы удаленного администрирования RAS
+    - name: Create a new RAS service
+      win_service:
+        name: '{{ ras_srv_name }}'
+        path: '{{ bin_path }}\ras.exe cluster --service --port=1545 localhost:1540'
+        start_mode: auto
